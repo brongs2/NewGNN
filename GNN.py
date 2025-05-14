@@ -1,15 +1,36 @@
+import random
+import numpy as np
 # import model classes from the package directory `models`
-from models import GLF, GDN, GS, SRP, ASA, SRR
+from models import GLF, GDN, GS, SRP, ASA, SRR, GCN, GCNII
+random.seed(42)
+np.random.seed(42)
+import torch
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
 import matplotlib.pyplot as plt
+import os
+os.makedirs("logs", exist_ok=True)
 from torch_geometric.datasets import Planetoid
 import torch.nn.functional as F
+from datetime import datetime
+
+# --- Jacobian spectral norm function ---
+import torch.autograd.functional as AF
+
+def compute_jacobian_spectral_norm(model, x, edge_index):
+    x = x.clone().detach().requires_grad_(True)
+    def model_output(inp):
+        return model(inp, edge_index)[0]  # First node's output
+    jac = AF.jacobian(model_output, x)
+    jac = jac.view(jac.size(0), -1)
+    spectral_norm = torch.linalg.norm(jac, ord=2).item()
+    return spectral_norm
 # Planetoid Cora dataset
 dataset = Planetoid(root='./data/Cora', name='Cora')
 data = dataset[0]
 
 # device 설정 (cuda or cpu)
-import torch
-import torch.nn.functional as F
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # DataLoader (전체 그래프 1개이므로 이렇게 설정)
@@ -77,14 +98,18 @@ def train_and_evaluate(model, device, train_loader, val_loader,
 
 # Unified Evaluation Across Depths for All Models
 models = [
+    ("GCN", GCN),
+    ("GCNII", GCNII),
     ("GS", GS),
-    ("GDN", GDN),
     ("GLF", GLF),
+    ("GDN", GDN),
     ("SRP", SRP),
     ("ASA", ASA),
-    ("SRR", SRR)
+    # ("SRR-r32a0.3", lambda in_c, hid_c, out_c, num_layers: SRR(in_c, hid_c, out_c, num_layers, reservoir_size=32, mix_alpha=0.3)),
+    # ("SRR-r16a0.5", lambda in_c, hid_c, out_c, num_layers: SRR(in_c, hid_c, out_c, num_layers, reservoir_size=16, mix_alpha=0.5)),
+    # ("SRR-r64a0.7", lambda in_c, hid_c, out_c, num_layers: SRR(in_c, hid_c, out_c, num_layers, reservoir_size=64, mix_alpha=0.7))
 ]
-layer_list = [1, 2, 4, 8, 16]
+layer_list = [2, 8, 16,32,64]
 results = {name: {"acc": [], "sim": []} for name, _ in models}
 
 for name, ModelClass in models:
@@ -95,6 +120,8 @@ for name, ModelClass in models:
         results[name]["acc"].append(acc)
         results[name]["sim"].append(sim)
         print(f"Layers: {num_layers} | Acc: {acc:.4f} | CosSim: {sim:.4f}")
+        jacobian_norm = compute_jacobian_spectral_norm(model, data.x.to(device), data.edge_index.to(device))
+        print(f"Jacobian Spectral Norm: {jacobian_norm:.4f}")
 
 # Plot Accuracy Across Depths
 plt.figure(figsize=(10, 5))
@@ -107,7 +134,9 @@ plt.grid(True)
 plt.xticks(layer_list)
 plt.legend()
 plt.tight_layout()
-plt.savefig("accuracy_across_depths.png")
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+plt.savefig(f"logs/accuracy_across_depths_{timestamp}.png")
 
 # Plot Cosine Similarity Across Depths
 plt.figure(figsize=(10, 5))
@@ -120,6 +149,7 @@ plt.grid(True)
 plt.xticks(layer_list)
 plt.legend()
 plt.tight_layout()
-plt.savefig("cosine_similarity_across_depths.png")
 
-print("Plots saved: accuracy_across_depths.png, cosine_similarity_across_depths.png")
+plt.savefig(f"logs/cosine_similarity_across_depths_{timestamp}.png")
+
+print(f"Plots saved: accuracy_across_depths_{timestamp}.png, cosine_similarity_across_depths_{timestamp}.png")

@@ -3,18 +3,56 @@ import torch.nn.functional as F
 from torch_geometric.datasets import Planetoid
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import SAGEConv
+from torch_geometric.nn import GCNConv
+from torch_geometric.nn import GCN2Conv
+class GCNII(torch.nn.Module):
+    def __init__(self, in_c, hid_c, out_c, num_layers, alpha=0.1, theta=0.5):
+        super().__init__()
+        self.lins = torch.nn.ModuleList()
+        self.lins.append(torch.nn.Linear(in_c, hid_c))
+        self.lins.append(torch.nn.Linear(hid_c, out_c))
+        self.convs = torch.nn.ModuleList([
+            GCN2Conv(hid_c, alpha=alpha, theta=theta, layer=i + 1) for i in range(num_layers)
+        ])
+        self.num_layers = num_layers
+
+    def forward(self, x, edge_index):
+        x0 = self.lins[0](x)  # 🟢 x0도 변환된 hidden dim이어야 함
+        x = x0
+        for conv in self.convs:
+            x = conv(x, x0, edge_index)
+            x = F.relu(x)
+        x = self.lins[1](x)
+        return x
+
 from torch_scatter import scatter_add
 import random
 from torch_geometric.utils import dropout_adj
+from datetime import datetime
 
+class GCN(torch.nn.Module):
+    def __init__(self, in_c, hid_c, out_c, num_layers):
+        super().__init__()
+        self.convs = torch.nn.ModuleList()
+        self.convs.append(GCNConv(in_c, hid_c))
+        for _ in range(num_layers - 2):
+            self.convs.append(GCNConv(hid_c, hid_c))
+        self.convs.append(GCNConv(hid_c, out_c))
+
+    def forward(self, x, edge_index):
+        for i, conv in enumerate(self.convs):
+            x = conv(x, edge_index)
+            if i != len(self.convs) - 1:
+                x = F.relu(x)
+        return x
 class GS(torch.nn.Module):
     def __init__(self, in_c, hid_c, out_c, num_layers):
         super().__init__()
         self.convs = torch.nn.ModuleList()
-        self.convs.append(SAGEConv(in_c, hid_c))
+        self.convs.append(GCNConv(in_c, hid_c))
         for _ in range(num_layers-2):
-            self.convs.append(SAGEConv(hid_c, hid_c))
-        self.convs.append(SAGEConv(hid_c, out_c))
+            self.convs.append(GCNConv(hid_c, hid_c))
+        self.convs.append(GCNConv(hid_c, out_c))
     def forward(self, x, edge_index):
         for i, conv in enumerate(self.convs):
             x = conv(x, edge_index)
@@ -31,7 +69,7 @@ class GDN(torch.nn.Module):
             assert len(deltas) == num_layers
             self.deltas = deltas
         self.proj = torch.nn.Linear(in_c, hid_c)
-        self.convs = torch.nn.ModuleList([SAGEConv(hid_c, hid_c) for _ in range(num_layers)])
+        self.convs = torch.nn.ModuleList([GCNConv(hid_c, hid_c) for _ in range(num_layers)])
         self.out_head = torch.nn.Linear(hid_c * 2, out_c)
 
     def quantize(self, h, delta):
@@ -87,10 +125,10 @@ class SRP(torch.nn.Module):
         self.delta = delta
         self.margin = margin
         self.convs = torch.nn.ModuleList()
-        self.convs.append(SAGEConv(in_c, hid_c))
+        self.convs.append(GCNConv(in_c, hid_c))
         for _ in range(num_layers - 2):
-            self.convs.append(SAGEConv(hid_c, hid_c))
-        self.convs.append(SAGEConv(hid_c, out_c))
+            self.convs.append(GCNConv(hid_c, hid_c))
+        self.convs.append(GCNConv(hid_c, out_c))
         # buffer to keep a snapshot that is delta layers old
         self.register_buffer("_snapshot", torch.empty(0))
 
@@ -126,10 +164,10 @@ class ASA(torch.nn.Module):
         super().__init__()
         self.drop_prob = drop_prob
         self.convs = torch.nn.ModuleList()
-        self.convs.append(SAGEConv(in_c, hid_c))
+        self.convs.append(GCNConv(in_c, hid_c))
         for _ in range(num_layers - 2):
-            self.convs.append(SAGEConv(hid_c, hid_c))
-        self.convs.append(SAGEConv(hid_c, out_c))
+            self.convs.append(GCNConv(hid_c, hid_c))
+        self.convs.append(GCNConv(hid_c, out_c))
 
     def forward(self, x, edge_index):
         # Adversary: randomly drop/scale edges at every call (training only)
@@ -156,10 +194,10 @@ class SRR(torch.nn.Module):
         self.reservoir = []  # list of (node_idx tensor, feature tensor) tuples
 
         self.convs = torch.nn.ModuleList()
-        self.convs.append(SAGEConv(in_c, hid_c))
+        self.convs.append(GCNConv(in_c, hid_c))
         for _ in range(num_layers - 2):
-            self.convs.append(SAGEConv(hid_c, hid_c))
-        self.convs.append(SAGEConv(hid_c, out_c))
+            self.convs.append(GCNConv(hid_c, hid_c))
+        self.convs.append(GCNConv(hid_c, out_c))
 
     def _store_snapshot(self, node_idx, feat):
         if len(self.reservoir) < self.reservoir_size:
