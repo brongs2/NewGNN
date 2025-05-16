@@ -1,7 +1,7 @@
 import random
 import numpy as np
-# import model classes from the package directory `models`
-from models import GLF, GDN, GS, SRP, ASA, SRR, GCN, GCNII
+from models import GLF, GDN, SRP, ASA, SRR, GCNII, GS, GCN, ARGC, ARGC_GCN
+from torch_geometric.nn import GraphNorm
 random.seed(42)
 np.random.seed(42)
 import torch
@@ -26,6 +26,9 @@ def compute_jacobian_spectral_norm(model, x, edge_index):
     jac = jac.view(jac.size(0), -1)
     spectral_norm = torch.linalg.norm(jac, ord=2).item()
     return spectral_norm
+
+
+# --- Adaptive Jacobian Range Regularization (AJR) loss ---
 # Planetoid Cora dataset
 dataset = Planetoid(root='./data/Cora', name='Cora')
 data = dataset[0]
@@ -82,8 +85,9 @@ def train_and_evaluate(model, device, train_loader, val_loader,
                     Δ = model.deltas[k]
                     h_q = model.quantize(h, Δ)
                     eps = torch.randn_like(h_q) * 0.01
-                    h = conv(h_q, batch.edge_index) + eps
+                    h = conv(h_q, h0, batch.edge_index) + eps
                     h = F.relu(h)
+                    h = F.dropout(h, p=model.dropout, training=model.training)
                 embeddings = h
                 out = model.out_head(torch.cat([h0, h], dim=-1))
             else:
@@ -96,18 +100,19 @@ def train_and_evaluate(model, device, train_loader, val_loader,
     sim = compute_mean_cosine_similarity(embeddings, batch.val_mask)
     return acc, sim
 
-# Unified Evaluation Across Depths for All Models
 models = [
-    ("GCN", GCN),
     ("GCNII", GCNII),
-    ("GS", GS),
-    ("GLF", GLF),
-    ("GDN", GDN),
-    ("SRP", SRP),
-    ("ASA", ASA),
-    # ("SRR-r32a0.3", lambda in_c, hid_c, out_c, num_layers: SRR(in_c, hid_c, out_c, num_layers, reservoir_size=32, mix_alpha=0.3)),
-    # ("SRR-r16a0.5", lambda in_c, hid_c, out_c, num_layers: SRR(in_c, hid_c, out_c, num_layers, reservoir_size=16, mix_alpha=0.5)),
-    # ("SRR-r64a0.7", lambda in_c, hid_c, out_c, num_layers: SRR(in_c, hid_c, out_c, num_layers, reservoir_size=64, mix_alpha=0.7))
+    ("GCN", GCN),
+    # ("GLF", GLF),
+    # ("GLF_GCN", GLF_GCN),
+    # ("SRP", SRP),
+    # ("SRP_GCN", SRP_GCN),
+    # ("ASA", ASA),
+    # ("ARGC", ARGC),
+    ("ARGC_GCN", ARGC_GCN),
+    # ("ASA_GCN", ASA_GCN),
+    # ("SRR", lambda in_c, hid_c, out_c, num_layers: SRR(in_c, hid_c, out_c, num_layers, reservoir_size=32, mix_alpha=0.5)),
+    # ("SRR_GCN", lambda in_c, hid_c, out_c, num_layers: SRR_GCN(in_c, hid_c, out_c, num_layers, reservoir_size=32, mix_alpha=0.5)),
 ]
 layer_list = [2, 8, 16,32,64]
 results = {name: {"acc": [], "sim": []} for name, _ in models}
@@ -115,7 +120,16 @@ results = {name: {"acc": [], "sim": []} for name, _ in models}
 for name, ModelClass in models:
     print(f"{name} Evaluation Across Depths")
     for num_layers in layer_list:
-        model = ModelClass(dataset.num_node_features, 64, dataset.num_classes, num_layers)
+        # Handle lambda (for SRR and SRR_GCN) vs. standard class
+        if callable(ModelClass) and not isinstance(ModelClass, type):
+            # Lambda: expects (in_c, hid_c, out_c, num_layers)
+            model = ModelClass(dataset.num_node_features, 64, dataset.num_classes, num_layers)
+        else:
+            # Most models accept dropout=0.5 except GCNII
+            if ModelClass in [GLF, GDN, SRP, ASA, GS]:
+                model = ModelClass(dataset.num_node_features, 64, dataset.num_classes, num_layers, dropout=0.5)
+            else:
+                model = ModelClass(dataset.num_node_features, 64, dataset.num_classes, num_layers)
         acc, sim = train_and_evaluate(model, device, train_loader, val_loader)
         results[name]["acc"].append(acc)
         results[name]["sim"].append(sim)
