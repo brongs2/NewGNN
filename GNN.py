@@ -1,6 +1,6 @@
 import random
 import numpy as np
-from models import GLF, GDN, SRP, ASA, SRR, GCNII, GS, GCN, ARGC, ARGC_GCN
+from models import  GCNII, GCN, ARGC
 from torch_geometric.nn import GraphNorm
 random.seed(42)
 np.random.seed(42)
@@ -14,6 +14,9 @@ os.makedirs("logs", exist_ok=True)
 from torch_geometric.datasets import Planetoid
 import torch.nn.functional as F
 from datetime import datetime
+
+# Specify dataset: choose 'Cora', 'CiteSeer', or 'PubMed'
+DATASET_NAME = 'CiteSeer'  # Change this to 'Cora' or 'PubMed' as needed
 
 # --- Jacobian spectral norm function ---
 import torch.autograd.functional as AF
@@ -29,8 +32,8 @@ def compute_jacobian_spectral_norm(model, x, edge_index):
 
 
 # --- Adaptive Jacobian Range Regularization (AJR) loss ---
-# Planetoid Cora dataset
-dataset = Planetoid(root='./data/Cora', name='Cora')
+# Planetoid dataset (selectable)
+dataset = Planetoid(root=f'./data/{DATASET_NAME}', name=DATASET_NAME)
 data = dataset[0]
 
 # device 설정 (cuda or cpu)
@@ -62,6 +65,7 @@ def train_and_evaluate(model, device, train_loader, val_loader,
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = torch.nn.CrossEntropyLoss()
 
+    # Training loop
     model.train()
     for epoch in range(epochs):
         for batch in train_loader:
@@ -72,12 +76,13 @@ def train_and_evaluate(model, device, train_loader, val_loader,
             loss.backward()
             optimizer.step()
 
+    # Evaluation
     model.eval()
     correct, total = 0, 0
-    all_embeddings = []
     with torch.no_grad():
         for batch in val_loader:
             batch = batch.to(device)
+            # Special handling for GDN
             if isinstance(model, GDN):
                 h0 = model.proj(batch.x)
                 h = h0
@@ -92,50 +97,59 @@ def train_and_evaluate(model, device, train_loader, val_loader,
                 out = model.out_head(torch.cat([h0, h], dim=-1))
             else:
                 out = model(batch.x, batch.edge_index)
-                embeddings = out if not isinstance(model, GS) else out
+                embeddings = out  # GS도 out 반환물이 embeddings 역할
+
             preds = out.argmax(dim=1)
             correct += (preds[batch.val_mask] == batch.y[batch.val_mask]).sum().item()
             total += batch.val_mask.sum().item()
+
     acc = correct / total
     sim = compute_mean_cosine_similarity(embeddings, batch.val_mask)
-    return acc, sim
+
+    # Dirichlet energy: 1/2 Σ_{(i,j)∈E} ||h_i - h_j||^2
+    row, col = batch.edge_index
+    diff = embeddings[row] - embeddings[col]
+    sq = diff.pow(2).sum(dim=1)
+    energy = float(sq.sum().item() / 2)
+
+    return acc, sim, energy
 
 models = [
-    ("GCNII", GCNII),
-    ("GCN", GCN),
+    # ("GCN", GCN),
+    # ("GCNII", GCNII),
     # ("GLF", GLF),
     # ("GLF_GCN", GLF_GCN),
     # ("SRP", SRP),
-    # ("SRP_GCN", SRP_GCN),
+    # ("SRP_GCN", SRR_GCN),
     # ("ASA", ASA),
-    # ("ARGC", ARGC),
-    ("ARGC_GCN", ARGC_GCN),
+    ("ARGC", ARGC),
     # ("ASA_GCN", ASA_GCN),
     # ("SRR", lambda in_c, hid_c, out_c, num_layers: SRR(in_c, hid_c, out_c, num_layers, reservoir_size=32, mix_alpha=0.5)),
     # ("SRR_GCN", lambda in_c, hid_c, out_c, num_layers: SRR_GCN(in_c, hid_c, out_c, num_layers, reservoir_size=32, mix_alpha=0.5)),
 ]
-layer_list = [2, 8, 16,32,64]
-results = {name: {"acc": [], "sim": []} for name, _ in models}
+
+layer_list = [2, 8, 16, 32, 64]
+results = {name: {"acc": [], "sim": [], "energy": []} for name, _ in models}
 
 for name, ModelClass in models:
     print(f"{name} Evaluation Across Depths")
     for num_layers in layer_list:
-        # Handle lambda (for SRR and SRR_GCN) vs. standard class
+        # Instantiate model
         if callable(ModelClass) and not isinstance(ModelClass, type):
-            # Lambda: expects (in_c, hid_c, out_c, num_layers)
             model = ModelClass(dataset.num_node_features, 64, dataset.num_classes, num_layers)
         else:
-            # Most models accept dropout=0.5 except GCNII
-            if ModelClass in [GLF, GDN, SRP, ASA, GS]:
-                model = ModelClass(dataset.num_node_features, 64, dataset.num_classes, num_layers, dropout=0.5)
-            else:
-                model = ModelClass(dataset.num_node_features, 64, dataset.num_classes, num_layers)
-        acc, sim = train_and_evaluate(model, device, train_loader, val_loader)
+            model = ModelClass(dataset.num_node_features, 64, dataset.num_classes, num_layers)
+        # Train and evaluate
+        acc, sim, energy = train_and_evaluate(model, device, train_loader, val_loader)
+        # Save metrics
         results[name]["acc"].append(acc)
         results[name]["sim"].append(sim)
+        results[name]["energy"].append(energy)
+        # Print metrics
         print(f"Layers: {num_layers} | Acc: {acc:.4f} | CosSim: {sim:.4f}")
         jacobian_norm = compute_jacobian_spectral_norm(model, data.x.to(device), data.edge_index.to(device))
         print(f"Jacobian Spectral Norm: {jacobian_norm:.4f}")
+        print(f"Dirichlet Energy: {energy:.4f}")
 
 # Plot Accuracy Across Depths
 plt.figure(figsize=(10, 5))
@@ -148,7 +162,6 @@ plt.grid(True)
 plt.xticks(layer_list)
 plt.legend()
 plt.tight_layout()
-
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 plt.savefig(f"logs/accuracy_across_depths_{timestamp}.png")
 
@@ -166,4 +179,17 @@ plt.tight_layout()
 
 plt.savefig(f"logs/cosine_similarity_across_depths_{timestamp}.png")
 
-print(f"Plots saved: accuracy_across_depths_{timestamp}.png, cosine_similarity_across_depths_{timestamp}.png")
+# Plot Dirichlet Energy Across Depths
+plt.figure(figsize=(10, 5))
+for name in results:
+    plt.plot(layer_list, results[name]["energy"], marker='^', label=name)
+plt.xlabel("Number of Layers")
+plt.ylabel("Dirichlet Energy")
+plt.title("Model Dirichlet Energy Across Depths")
+plt.grid(True)
+plt.xticks(layer_list)
+plt.legend()
+plt.tight_layout()
+plt.savefig(f"logs/dirichlet_energy_across_depths_{timestamp}.png")
+
+print(f"Plots saved: accuracy_across_depths_{timestamp}.png, cosine_similarity_across_depths_{timestamp}.png, dirichlet_energy_across_depths_{timestamp}.png")
