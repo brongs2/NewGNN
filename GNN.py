@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from datetime import datetime
 
 # Specify dataset: choose 'Cora', 'CiteSeer', or 'PubMed'
-DATASET_NAME = 'CiteSeer'  # Change this to 'Cora' or 'PubMed' as needed
+DATASET_NAME = 'Cora'  # Change this to 'Cora' or 'PubMed' as needed
 
 # --- Jacobian spectral norm function ---
 import torch.autograd.functional as AF
@@ -83,21 +83,9 @@ def train_and_evaluate(model, device, train_loader, val_loader,
         for batch in val_loader:
             batch = batch.to(device)
             # Special handling for GDN
-            if isinstance(model, GDN):
-                h0 = model.proj(batch.x)
-                h = h0
-                for k, conv in enumerate(model.convs):
-                    Δ = model.deltas[k]
-                    h_q = model.quantize(h, Δ)
-                    eps = torch.randn_like(h_q) * 0.01
-                    h = conv(h_q, h0, batch.edge_index) + eps
-                    h = F.relu(h)
-                    h = F.dropout(h, p=model.dropout, training=model.training)
-                embeddings = h
-                out = model.out_head(torch.cat([h0, h], dim=-1))
-            else:
-                out = model(batch.x, batch.edge_index)
-                embeddings = out  # GS도 out 반환물이 embeddings 역할
+
+            out = model(batch.x, batch.edge_index)
+            embeddings = out  # GS도 out 반환물이 embeddings 역할
 
             preds = out.argmax(dim=1)
             correct += (preds[batch.val_mask] == batch.y[batch.val_mask]).sum().item()
@@ -115,8 +103,8 @@ def train_and_evaluate(model, device, train_loader, val_loader,
     return acc, sim, energy
 
 models = [
-    # ("GCN", GCN),
-    # ("GCNII", GCNII),
+    ("GCN", GCN),
+    ("GCNII", GCNII),
     # ("GLF", GLF),
     # ("GLF_GCN", GLF_GCN),
     # ("SRP", SRP),
@@ -151,6 +139,53 @@ for name, ModelClass in models:
         print(f"Jacobian Spectral Norm: {jacobian_norm:.4f}")
         print(f"Dirichlet Energy: {energy:.4f}")
 
+# ---------------- ARGC 파라미터 그리드 실험 ----------------
+# 실험할 파라미터 값들
+# tau_grid     = [0.5, 1.0, 2.0]   # gate temperature
+# alpha_grid   = [0.2]   # skip 비율
+# # dropout_grid = [0.1, 0.3, 0.5]   # base dropout
+# dropout_grid = [0.3]
+
+# layer_list = [2, 8, 16, 32, 64]
+
+# 결과 저장 dict  (key: config 이름)
+# results = {}
+
+# for tau in tau_grid:
+#     for alpha in alpha_grid:
+#         for drop in dropout_grid:
+#             cfg_name = f"ARGC_tau{tau}_alpha{alpha}_drop{drop}"
+#             results[cfg_name] = {"acc": [], "sim": [], "energy": []}
+
+#             print(f"\n{cfg_name} Evaluation Across Depths")
+#             for num_layers in layer_list:
+#                 # ARGC 인스턴스 생성
+#                 model = ARGC(
+#                     dataset.num_node_features, 64, dataset.num_classes,
+#                     num_layers,
+#                     dropout=drop,
+#                     tau_init=tau,
+#                     alpha_skip=alpha
+#                 )
+
+#                 # 학습 & 평가
+#                 acc, sim, energy = train_and_evaluate(
+#                     model, device, train_loader, val_loader
+#                 )
+
+#                 # 결과 저장
+#                 results[cfg_name]["acc"].append(acc)
+#                 results[cfg_name]["sim"].append(sim)
+#                 results[cfg_name]["energy"].append(energy)
+
+#                 # 콘솔 출력
+#                 print(f"Layers: {num_layers:>2} | "
+#                       f"Acc: {acc:.4f} | CosSim: {sim:.4f} | Energy: {energy:.1f}")
+
+#                 jac_norm = compute_jacobian_spectral_norm(
+#                     model, data.x.to(device), data.edge_index.to(device)
+#                 )
+#                 print(f"  Jacobian Spectral Norm: {jac_norm:.4f}")
 # Plot Accuracy Across Depths
 plt.figure(figsize=(10, 5))
 for name in results:

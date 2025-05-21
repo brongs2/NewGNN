@@ -23,7 +23,7 @@ class GCNII(torch.nn.Module):
         self.num_layers = num_layers
 
     def forward(self, x, edge_index):
-        x0 = self.lins[0](x)  # 🟢 x0도 변환된 hidden dim이어야 함
+        x0 = self.lins[0](x)  
         x = x0
         for conv in self.convs:
             x = conv(x, x0, edge_index)
@@ -56,7 +56,7 @@ class ARGC(torch.nn.Module):
     Adaptive Residual Gate Convolution using standard GCNConv.
     """
     def __init__(self, in_c, hid_c, out_c, num_layers,
-                 dropout=0.3, tau_init=1.0, alpha_skip=0.2):
+                 dropout=0.3, tau_init=0.5, alpha_skip=0.3):
         super().__init__()
         # Hyperparameters
         self.base_drop = dropout
