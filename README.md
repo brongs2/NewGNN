@@ -7,5 +7,10 @@
 ```bash
 git clone <https://github.com/brongs2/NewGNN.git>
 cd NewGNN
+
+# 의존성 설치
 pip install -r requirements-base.txt
 pip install -r requirements-pyg.txt
+
+# 데이터 다운로드 및 학습 실행
+python src/train.py --model ARGC --dataset Cora --layers 32 --epochs 200 --lr 0.001
